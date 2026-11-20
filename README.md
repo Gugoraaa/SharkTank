@@ -7,7 +7,12 @@ A web application that simulates a Shark Tank pitch experience using AI-powered 
 ```
 shark-tank-app/
 ├── backend/
-│   ├── main.py              # FastAPI server with all endpoints
+│   ├── main.py              # Punto de entrada: simulador en terminal (--server para la API)
+│   ├── api.py               # FastAPI server with all endpoints
+│   ├── orquestador.py       # Orquestador determinista (etapas, turnos, historial)
+│   ├── sharks.py            # Perfiles y agentes Shark
+│   ├── llm_simulado.py      # LLM simulado para trabajar sin API keys
+│   ├── test_ronda_preguntas.py
 │   ├── requirements.txt     # Python dependencies
 │   └── .env                 # Your actual environment variables
 │   
@@ -113,12 +118,46 @@ VITE_API_URL=http://localhost:8000
 
 ## Running the Application
 
-### Start Backend (Terminal 1):
+### Simulador en terminal
+
+Flujo: ① Pitch (+ monto y porcentaje) → ② Preguntas por vueltas → ③ Retroalimentación → ④ Ofertas (dentro/fuera) → ⑤ Elección.
+
+| Shark | Qué tan fácil es convencerlo | Máx. preguntas |
+|---|---|---|
+| Luffy | muy fácil | 1 |
+| Shanks | fácil | 2 |
+| Zoro | media | 2 |
+| Whitebeard | difícil | 3 |
+| Arlong | muy difícil | 4 |
+
+Oferta = f(interés): ninguno → fuera · bajo → pequeña (mitad del monto, mismo %) · medio → cercana (mismo monto, 1.5× el %) · alto → completa (lo pedido).
+
+Con el LLM real, las preguntas repetidas se detectan por significado (embeddings `text-embedding-3-small`, umbral 0.78 configurable con `UMBRAL_REPETIDAS`).
+
+```bash
+cd backend
+python main.py          # pitch + ronda de preguntas; tú respondes por escrito
+python main.py --auto   # corrida de prueba con respuestas automáticas
+python -m unittest test_ronda_preguntas -v   # pruebas automáticas con el simulador (no gastan tokens)
+```
+
+- Por defecto los Sharks usan un LLM simulado (`llm_simulado.py`): no gasta tokens ni necesita internet. Las pruebas unitarias **siempre** usan el simulador.
+- Para usar OpenAI de verdad (`llm_openai.py`): `pip install openai python-dotenv` y en `backend/.env`:
+  ```env
+  USAR_LLM_REAL=1
+  API_TYPE=openai
+  OPENAI_API_KEY=sk-...
+  OPENAI_MODEL=gpt-4o-mini   # opcional
+  ```
+- Variables opcionales: `NUM_SHARKS` (1–5, default 5), `MAX_VUELTAS` (default 5), `SEMILLA` (corridas reproducibles).
+- Cada corrida se guarda en `backend/corridas/` con el historial y la verificación (preguntas repetidas, % de entrega a los Sharks).
+
+### Start Backend API (Terminal 1):
 
 ```bash
 cd backend
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-python main.py
+python main.py --server
 ```
 
 The backend will start on `http://localhost:8000`

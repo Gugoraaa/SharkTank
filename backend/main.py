@@ -1,444 +1,260 @@
 """
-FastAPI Backend for Shark Tank Chat Application
-Migrated from Jupyter notebooks to web application
+Shark Tank — punto de entrada.
+
+    python main.py            -> simulador en la terminal (pitch, preguntas, retroalimentación, ofertas, elección)
+    python main.py --auto     -> igual, pero el emprendedor responde solo (corrida de prueba rápida)
+    python main.py --server   -> levanta la API FastAPI (api.py)
+
+Por defecto los Sharks usan un LLM simulado (llm_simulado.py), sin API keys.
+Para usar OpenAI de verdad, en backend/.env:  USAR_LLM_REAL=1, API_TYPE=openai, OPENAI_API_KEY=...
+(ver llm_openai.py).
 """
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional, Dict
+from __future__ import annotations
+
+import json
 import os
-from dotenv import load_dotenv
-from crewai import Agent, Task, Crew, LLM
-import logging
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Optional
 
-# Load environment variables
-load_dotenv()
+from orquestador import Orquestador, formatear_oferta, son_similares
+from sharks import PERFILES_DEFAULT, SharkAgent
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+BASE = Path(__file__).parent
 
-# Initialize FastAPI app
-app = FastAPI(title="Shark Tank Chat API")
-
-# CORS middleware - allows frontend to communicate with backend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ===== STEP 1: Configuration from notebooks (migrated to .env) =====
-# Original: API_TYPE, OPENAI_API_KEY, AZURE_API_KEY, etc.
-# New: All loaded from .env file
-
-API_TYPE = os.getenv("API_TYPE", "azure").lower()
-
-if API_TYPE == "openai":
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4")
-    model_string = OPENAI_MODEL
-    logger.info(f"Using OpenAI API with model: {OPENAI_MODEL}")
-elif API_TYPE == "azure":
-    AZURE_API_KEY = os.getenv("AZURE_API_KEY")
-    AZURE_ENDPOINT = os.getenv("AZURE_ENDPOINT")
-    AZURE_DEPLOYMENT = os.getenv("AZURE_DEPLOYMENT", "gpt-4o-mini")
-    AZURE_API_VERSION = os.getenv("AZURE_API_VERSION", "2024-02-01")
-    
-    os.environ['AZURE_API_KEY'] = AZURE_API_KEY
-    os.environ["AZURE_API_BASE"] = AZURE_ENDPOINT
-    os.environ["AZURE_API_VERSION"] = AZURE_API_VERSION
-    
-    model_string = f"azure/{AZURE_DEPLOYMENT}"
-    logger.info(f"Using Azure OpenAI API with deployment: {AZURE_DEPLOYMENT}")
-else:
-    raise ValueError("API_TYPE must be either 'openai' or 'azure'")
-
-# ===== STEP 2: Data Models =====
-
-class Message(BaseModel):
-    content: str
-    sender: str  # 'Entrepreneur' or 'Judge'
-
-class BusinessIdea(BaseModel):
-    name: str
-    description: str
-    target_market: str
-    revenue_model: str
-    current_traction: str
-    investment_needed: str
-    use_of_funds: str
-
-class JudgeAgent(BaseModel):
-    name: str
-    role: str
-    goal: str
-    backstory: str
-
-class ChatRequest(BaseModel):
-    business_idea: BusinessIdea
-    judges: List[JudgeAgent]
-    message: Optional[str] = None
-    entrepreneur_name: Optional[str] = None
-
-class ChatResponse(BaseModel):
-    response: str
-    sender: str
-    conversation_history: List[Dict[str, str]]
-
-# ===== STEP 3: Global State =====
-# Original: conversation_history = [] in both notebooks
-# New: Stored per session (simplified for demo, use proper session management in production)
-
-conversation_history: List[Dict[str, str]] = []
-current_business_idea: Optional[BusinessIdea] = None
-judge_agents: List[Agent] = []
-current_judges_config: List[Dict[str, str]] = []  # Store judge names for message attribution
-entrepreneur_name: str = ""  # Store entrepreneur name
-
-# ===== STEP 4: Agent Creation Functions =====
-# Migrated from Step 7 (judge notebook) and Step 7 (entrepreneur notebook)
-
-def create_judge_agents(judges: List[JudgeAgent]) -> List[Agent]:
-    """
-    Create judge agents from the provided configurations
-    Original: Single judge_agent in notebook
-    New: Support for multiple judges
-    """
-    agents = []
-    for judge in judges:
-        agent = Agent(
-            role=judge.role,
-            goal=judge.goal,
-            backstory=judge.backstory,
-            verbose=True,
-            allow_delegation=False,
-            llm=LLM(model=model_string)
-        )
-        agents.append(agent)
-        logger.info(f"Created judge agent: {judge.name}")
-    
-    return agents
-
-def create_entrepreneur_agent() -> Agent:
-    """
-    Create the entrepreneur agent (user's proxy in the system)
-    Original: entrepreneur_agent from entrepreneur notebook Step 7
-    """
-    agent = Agent(
-        role="Tech Startup Entrepreneur",
-        goal="Pitch your innovative business idea and secure investment",
-        backstory="""You are a passionate entrepreneur with an innovative tech startup.
-        You've developed a revolutionary product and are seeking investment to scale your business.
-        You're confident in your product, but you need to convince the Shark Tank judges
-        that your business model is sound and that you have a clear path to profitability.
-        You understand your market well and have some early traction with customers.""",
-        verbose=True,
-        allow_delegation=False,
-        llm=LLM(model=model_string)
-    )
-    return agent
-
-# ===== STEP 5: Core Logic Functions =====
-# Migrated from notebooks' task creation and crew execution
-
-def generate_initial_pitch(business_idea: BusinessIdea, entrepreneur_name: str) -> str:
-    """
-    Generate initial pitch for the business idea
-    Original: initiate_pitch() from entrepreneur notebook Step 10
-    """
-    entrepreneur_agent = create_entrepreneur_agent()
-    
-    task = Task(
-        description=f"""Create a compelling initial pitch for your business idea.
-
-        Your name is {entrepreneur_name}.
-
-        Your business idea:
-        Name: {business_idea.name}
-        Description: {business_idea.description}
-        Target Market: {business_idea.target_market}
-        Revenue Model: {business_idea.revenue_model}
-        Current Traction: {business_idea.current_traction}
-        Investment Needed: {business_idea.investment_needed}
-        Use of Funds: {business_idea.use_of_funds}
-
-        Start your pitch by greeting the judges: "Hello Sharks, I'm {entrepreneur_name}..."
-        
-        Be enthusiastic and concise. Highlight the problem you're solving, your solution,
-        market opportunity, and why your team is uniquely positioned to succeed.
-        End with a clear ask for the investment amount and equity offer.""",
-        expected_output="A compelling business pitch for Shark Tank",
-        agent=entrepreneur_agent,
-    )
-
-    crew = Crew(
-        agents=[entrepreneur_agent],
-        tasks=[task],
-    )
-
-    result = crew.kickoff()
-    return result.raw
-
-def generate_judge_response(business_idea: BusinessIdea, conversation: List[Dict[str, str]]) -> List[tuple[str, str]]:
-    """
-    Generate judge's response to the entrepreneur's pitch or message
-    Original: submit_message endpoint logic from judge notebook Step 7
-    Modified: Now returns responses from ALL judges, not just the first one
-    Returns: List of (response_text, judge_name) tuples
-    """
-    if not judge_agents:
-        raise HTTPException(status_code=400, detail="No judges configured")
-    
-    responses = []
-    context = "\n".join([f"{msg['role']}: {msg['content']}" for msg in conversation])
-
-    # Generate response from EACH judge
-    for idx, judge_agent in enumerate(judge_agents):
-        judge_name = current_judges_config[idx]['name'] if idx < len(current_judges_config) else f"Judge {idx + 1}"
-        
-        task = Task(
-            description=f"""You are {judge_name}. Evaluate the entrepreneur's pitch and respond appropriately.
-
-            Business being evaluated:
-            Name: {business_idea.name}
-            Description: {business_idea.description}
-            Target Market: {business_idea.target_market}
-            Revenue Model: {business_idea.revenue_model}
-            Current Traction: {business_idea.current_traction}
-            Investment Needed: {business_idea.investment_needed}
-            Use of Funds: {business_idea.use_of_funds}
-
-            Conversation history:
-            {context}
-
-            Respond with your thoughts, questions or investment decision. Be critical but constructive.
-            If you need more information, ask specific questions. If you have enough information,
-            make your final investment decision.
-            
-            IMPORTANT: Start your response with "{judge_name}: " to identify yourself clearly.""",
-            expected_output="Evaluation and feedback on the entrepreneur's pitch",
-            agent=judge_agent,
-        )
-
-        crew = Crew(
-            agents=[judge_agent],
-            tasks=[task],
-        )
-
-        result = crew.kickoff()
-        responses.append((result.raw, judge_name))
-    
-    return responses
-
-def generate_entrepreneur_response(business_idea: BusinessIdea, conversation: List[Dict[str, str]], user_message: str) -> str:
-    """
-    Generate entrepreneur's response to judge feedback
-    Original: respond_to_feedback() from entrepreneur notebook Step 12
-    Modified: Takes user message as input instead of generating automatically
-    """
-    entrepreneur_agent = create_entrepreneur_agent()
-    
-    context = "\n".join([f"{msg['role']}: {msg['content']}" for msg in conversation])
-
-    task = Task(
-        description=f"""Respond to the Shark Tank judge's feedback or questions.
-
-        Your business idea:
-        Name: {business_idea.name}
-        Description: {business_idea.description}
-        Target Market: {business_idea.target_market}
-        Revenue Model: {business_idea.revenue_model}
-        Current Traction: {business_idea.current_traction}
-        Investment Needed: {business_idea.investment_needed}
-        Use of Funds: {business_idea.use_of_funds}
-
-        Conversation history:
-        {context}
-
-        User's input: {user_message}
-
-        Respond to the judge's feedback or questions thoughtfully.
-        Address any concerns they raise, provide additional details about your business when needed,
-        and try to convince them of the value of your idea. Be confident but not arrogant.""",
-        expected_output="A thoughtful response to the judge's feedback",
-        agent=entrepreneur_agent,
-    )
-
-    crew = Crew(
-        agents=[entrepreneur_agent],
-        tasks=[task],
-    )
-
-    result = crew.kickoff()
-    return result.raw
-
-# ===== STEP 6: API Endpoints =====
-
-@app.get("/")
-async def root():
-    """Health check endpoint"""
-    return {"status": "Shark Tank Chat API is running"}
-
-@app.post("/api/test-connection")
-async def test_connection():
-    """
-    Test API connection
-    Original: Step 4 test from both notebooks
-    """
+def cargar_env(ruta: Path) -> None:
+    """Carga backend/.env. Usa python-dotenv si está instalado; si no, un lector simple
+    (KEY=VALOR, ignora comentarios). No sobrescribe variables ya definidas en la terminal."""
+    if not ruta.exists():
+        return
     try:
-        test_llm = LLM(model=model_string)
-        test_agent = Agent(
-            role="Tester",
-            goal="Test API connection",
-            backstory="You are a simple agent created to test the API connection.",
-            verbose=True,
-            llm=test_llm
-        )
-        
-        test_task = Task(
-            description="Say 'Hello, the connection is working!' Please confirm which API you're using (OpenAI or Azure).",
-            expected_output="A confirmation message",
-            agent=test_agent
-        )
-        
-        test_crew = Crew(
-            agents=[test_agent],
-            tasks=[test_task],
-            verbose=1,
-            tracing=0
-        )
-        
-        result = test_crew.kickoff()
-        return {
-            "status": "success",
-            "message": "Connection test successful",
-            "api_type": API_TYPE.upper(),
-            "response": result.raw
-        }
-    except Exception as e:
-        logger.error(f"Connection test failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Connection test failed: {str(e)}")
+        from dotenv import load_dotenv
 
-@app.post("/api/start-pitch")
-async def start_pitch(request: ChatRequest):
-    """
-    Initialize a new pitch session
-    Original: initiate_pitch() from entrepreneur notebook
-    """
-    global conversation_history, current_business_idea, judge_agents, current_judges_config, entrepreneur_name
-    
-    try:
-        # Reset conversation
-        conversation_history = []
-        current_business_idea = request.business_idea
-        entrepreneur_name = request.entrepreneur_name or "Entrepreneur"
-        
-        # Store judges config for name attribution
-        current_judges_config = [{"name": j.name, "role": j.role} for j in request.judges]
-        
-        # Create judge agents
-        judge_agents = create_judge_agents(request.judges)
-        
-        # Generate initial pitch with entrepreneur name
-        initial_pitch = generate_initial_pitch(request.business_idea, entrepreneur_name)
-        
-        # Add to conversation history
-        conversation_history.append({
-            "role": "Entrepreneur",
-            "content": initial_pitch,
-            "sender_name": entrepreneur_name
-        })
-        
-        # Generate responses from ALL judges
-        judge_responses = generate_judge_response(request.business_idea, conversation_history)
-        
-        # Add all judge responses to conversation history
-        for judge_response, judge_name in judge_responses:
-            conversation_history.append({
-                "role": "Judge",
-                "content": judge_response,
-                "judge_name": judge_name
-            })
-        
-        return ChatResponse(
-            response=f"Responses from {len(judge_responses)} judge(s)",
-            sender="Judge",
-            conversation_history=conversation_history
-        )
-        
-    except Exception as e:
-        logger.error(f"Error starting pitch: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error starting pitch: {str(e)}")
+        load_dotenv(ruta)
+        return
+    except ImportError:
+        pass
+    for linea in ruta.read_text(encoding="utf-8").splitlines():
+        linea = linea.strip()
+        if not linea or linea.startswith("#") or "=" not in linea:
+            continue
+        clave, valor = linea.split("=", 1)
+        valor = valor.split(" #", 1)[0].strip().strip('"').strip("'")
+        os.environ.setdefault(clave.strip(), valor)
 
-@app.post("/api/send-message")
-async def send_message(message: Message):
-    """
-    Send a message in the ongoing conversation
-    Original: submit_message and respond_to_feedback from both notebooks
-    """
-    global conversation_history, current_business_idea, entrepreneur_name
-    
-    if not current_business_idea:
-        raise HTTPException(status_code=400, detail="No active pitch session. Please start a pitch first.")
-    
-    try:
-        # Add user's message to history with entrepreneur name
-        conversation_history.append({
-            "role": message.sender,
-            "content": message.content,
-            "sender_name": entrepreneur_name
-        })
-        
-        # Generate responses from ALL judges
-        judge_responses = generate_judge_response(current_business_idea, conversation_history)
-        
-        # Add all judge responses to conversation history
-        for judge_response, judge_name in judge_responses:
-            conversation_history.append({
-                "role": "Judge",
-                "content": judge_response,
-                "judge_name": judge_name
-            })
-        
-        return ChatResponse(
-            response=f"Responses from {len(judge_responses)} judge(s)",
-            sender="Judge",
-            conversation_history=conversation_history
-        )
-        
-    except Exception as e:
-        logger.error(f"Error sending message: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error sending message: {str(e)}")
 
-@app.get("/api/conversation-history")
-async def get_conversation_history():
-    """
-    Get the current conversation history
-    Original: check_conversation() from both notebooks and get_conversation_history endpoint
-    """
-    return {
-        "conversation_history": conversation_history,
-        "business_idea": current_business_idea.dict() if current_business_idea else None
-    }
+cargar_env(BASE / ".env")
 
-@app.post("/api/reset")
-async def reset_conversation():
-    """Reset the conversation and start fresh"""
-    global conversation_history, current_business_idea, judge_agents, current_judges_config, entrepreneur_name
-    
-    conversation_history = []
-    current_business_idea = None
-    judge_agents = []
-    current_judges_config = []
-    entrepreneur_name = ""
-    
-    return {"status": "success", "message": "Conversation reset"}
+
+# ---------- Selección del "cerebro" de los Sharks ----------
+
+def crear_sharks(num: int):
+    """Devuelve (sharks, descripción del modo, comparador de preguntas repetidas)."""
+    simulado = os.getenv("USAR_LLM_REAL") != "1"
+    perfiles = PERFILES_DEFAULT[:num]
+    if simulado:
+        from llm_simulado import SimuladorLLM
+
+        semilla = os.getenv("SEMILLA")
+        base = int(semilla) if semilla and semilla.isdigit() else None
+        sharks = [
+            SharkAgent(p, SimuladorLLM(p, semilla=None if base is None else base + i))
+            for i, p in enumerate(perfiles)
+        ]
+        return sharks, "simulado (sin API key; USAR_LLM_REAL=1 para el real)", son_similares
+    from llm_openai import OpenAILLM
+
+    llm = OpenAILLM()
+    return [SharkAgent(p, llm) for p in perfiles], f"real ({llm.descripcion})", llm.comparador()
+
+
+# ---------- Entrada / salida en terminal ----------
+
+def leer_multilinea(titulo: str) -> str:
+    print(titulo)
+    print("(Escribe tu texto. Deja una línea vacía para terminar.)")
+    while True:
+        lineas = []
+        while True:
+            linea = input("> ")
+            if not linea.strip():
+                break
+            lineas.append(linea)
+        texto = "\n".join(lineas).strip()
+        if texto:
+            return texto
+        print("El texto no puede estar vacío. Inténtalo de nuevo.")
+
+
+def leer_numero(titulo: str, minimo: float = 0, maximo: float = float("inf")) -> float:
+    while True:
+        crudo = input(titulo).strip().replace("$", "").replace(",", "").replace("%", "")
+        try:
+            valor = float(crudo)
+            if minimo < valor <= maximo:
+                return valor
+        except ValueError:
+            pass
+        print(f"Escribe un número mayor que {minimo:g}" + (f" y hasta {maximo:g}." if maximo != float("inf") else "."))
+
+
+ICONO_INTERES = {"alto": "🟢", "medio": "🟡", "bajo": "🟠", "ninguno": "🔴"}
+
+
+def imprimir_mensaje(mensaje: Dict) -> None:
+    tipo = mensaje["tipo"]
+    if tipo == "inicio_vuelta":
+        print(f"\n{'=' * 22} Vuelta {mensaje['vuelta']} {'=' * 22}")
+    elif tipo == "inicio_etapa":
+        titulos = {"retroalimentacion": "③ RETROALIMENTACIÓN", "ofertas": "④ OFERTAS — ¿Dentro o fuera?"}
+        print(f"\n{'=' * 60}\n{titulos[mensaje['etapa']]}\n{'=' * 60}")
+    elif tipo == "pregunta":
+        print(f"\n🦈 {mensaje['emisor']} pregunta:\n   {mensaje['contenido']}")
+    elif tipo == "pasar":
+        print(f"\n🦈 {mensaje['emisor']} pasa.")
+    elif tipo == "respuesta":
+        print("   ✔ Respuesta registrada y compartida con todos los Sharks.")
+    elif tipo == "recomendacion":
+        print(f"\n🦈 {mensaje['emisor']} recomienda:\n   {mensaje['contenido']}")
+    elif tipo == "decision":
+        estado = "ESTOY DENTRO" if mensaje["dentro"] else "ESTOY FUERA"
+        print(f"\n{ICONO_INTERES.get(mensaje['interes'], '')} {mensaje['emisor']}: {estado}  "
+              f"(interés {mensaje['interes']})")
+        print(f"   \"{mensaje['contenido']}\"")
+        if mensaje["dentro"]:
+            print(f"   Oferta: {formatear_oferta(mensaje['oferta'])}")
+    elif tipo == "eleccion":
+        print(f"\n🤝 {mensaje['contenido']}")
+
+
+def imprimir_resumen(rep: Dict, max_vueltas: int) -> None:
+    print("\n" + "=" * 60)
+    print("RESUMEN DE LA SESIÓN")
+    print("=" * 60)
+    if rep["fin_por_consenso"]:
+        print(f"✔ La ronda de preguntas terminó porque todos pasaron en la vuelta {rep['vueltas_jugadas']}.")
+    else:
+        print(f"⚠ La ronda de preguntas terminó por alcanzar el máximo de vueltas ({max_vueltas}).")
+    rechazadas = sum(1 for r in rep["rechazos"] if r["motivo"] == "repetida")
+    por_shark = ", ".join(f"{n} {c}" for n, c in rep["preguntas_por_shark"].items())
+    print(f"Preguntas realizadas: {rep['total_preguntas']}  ({por_shark})")
+    print(f"Preguntas repetidas en el historial: {len(rep['preguntas_repetidas'])}"
+          f"  (intentos repetidos rechazados por el orquestador: {rechazadas})")
+    print(f"Preguntas sin respuesta: {len(rep['preguntas_sin_respuesta'])}")
+    print(f"Entrega de preguntas y respuestas a todos los Sharks: "
+          f"{rep['entregas_qa_ok']}/{rep['entregas_qa_esperadas']} ({rep['porcentaje_entrega']}%)")
+    print(f"Dentro: {', '.join(rep['dentro']) or 'nadie'}")
+    print(f"Fuera:  {', '.join(rep['fuera']) or 'nadie'}")
+    print(f"Trato:  {rep['eleccion'] or 'ninguno'}")
+
+
+def guardar_corrida(nombre: str, sharks, modo: str, max_vueltas: int, orq: Orquestador, rep: Dict) -> Path:
+    carpeta = BASE / "corridas"
+    carpeta.mkdir(exist_ok=True)
+    archivo = carpeta / f"corrida_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+    archivo.write_text(json.dumps({
+        "emprendedor": nombre,
+        "modo_llm": modo,
+        "sharks": [s.nombre for s in sharks],
+        "max_vueltas": max_vueltas,
+        "solicitud": {"monto": orq.monto, "porcentaje": orq.porcentaje},
+        "historial": orq.historial,
+        "verificacion": rep,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    return archivo
+
+
+# ---------- Programa ----------
+
+def ejecutar_terminal(auto: bool = False) -> Dict:
+    print("\n" + "=" * 60)
+    print("            SHARK TANK — Simulador (modo terminal)")
+    print("=" * 60)
+
+    num = os.getenv("NUM_SHARKS", "5")
+    num = max(1, min(5, int(num))) if num.isdigit() else 5
+    max_vueltas = int(os.getenv("MAX_VUELTAS", "5"))
+    sharks, modo, es_similar = crear_sharks(num)
+    print(f"Modo de los Sharks: {modo}")
+
+    nombre = "Emprendedor de prueba" if auto else (input("\nTu nombre (emprendedor): ").strip() or "Emprendedor")
+
+    print("\nSharks en la mesa (del más fácil al más difícil de convencer):")
+    for s in sharks:
+        print(f"  • {s.nombre} — {s.perfil.facilidad_convencer} de convencer; se fija en {s.perfil.enfoque}")
+
+    if auto:
+        def pedir_respuesta(nombre_shark: str, pregunta: str) -> str:
+            texto = f"Respuesta de prueba para {nombre_shark} sobre: {pregunta}"
+            print(f"\n✍️  (auto) {texto}")
+            return texto
+    else:
+        def pedir_respuesta(nombre_shark: str, pregunta: str) -> str:
+            return leer_multilinea(f"\n✍️  Tu respuesta para {nombre_shark}:")
+
+    orq = Orquestador(sharks=sharks, pedir_respuesta=pedir_respuesta, max_vueltas=max_vueltas,
+                      notificar=imprimir_mensaje, es_similar=es_similar)
+
+    # ① Pitch
+    if auto:
+        pitch = "Hola Sharks, presento una app de prueba para pedir comida en la universidad."
+        monto, porcentaje = 100_000, 10
+        print(f"\n① PITCH (auto): {pitch}  Pido ${monto:,} por el {porcentaje}%.")
+    else:
+        pitch = leer_multilinea("\n① PITCH — Presenta tu negocio a los Sharks:")
+        monto = leer_numero("¿Cuánto dinero pides? (ej. 1500000): $")
+        porcentaje = leer_numero("¿Qué porcentaje de tu empresa ofreces? (ej. 10): ", maximo=100)
+    orq.etapa_pitch(nombre, pitch, monto, porcentaje)
+
+    # ② Preguntas
+    print("\n② PREGUNTAS — Cada Shark pregunta o pasa por turnos; termina cuando todos pasan en una misma vuelta.")
+    orq.etapa_preguntas(nombre)
+
+    # ③ Retroalimentación y ④ Ofertas
+    print("\nLos Sharks están deliberando...")
+    orq.etapa_retro_y_ofertas()
+
+    # ⑤ Elección
+    def elegir(disponibles: Dict[str, Dict]) -> Optional[str]:
+        nombres = list(disponibles)
+        if auto:  # la mejor valuación (más dinero por cada punto porcentual)
+            return max(nombres, key=lambda n: disponibles[n]["monto"] / disponibles[n]["porcentaje"])
+        print(f"\n{'=' * 60}\n⑤ ELECCIÓN — ¿Con quién haces el trato?\n{'=' * 60}")
+        for i, n in enumerate(nombres, 1):
+            print(f"  {i}. {n}: {formatear_oferta(disponibles[n])}")
+        print("  0. Ninguno")
+        while True:
+            opcion = input("Tu elección: ").strip()
+            if opcion.isdigit() and 0 <= int(opcion) <= len(nombres):
+                return nombres[int(opcion) - 1] if int(opcion) > 0 else None
+            print(f"Escribe un número del 0 al {len(nombres)}.")
+
+    if not any(orq.ofertas.values()):
+        print("\nNingún Shark hizo oferta. 😢")
+    orq.etapa_eleccion(nombre, elegir)
+
+    rep = orq.verificar()
+    imprimir_resumen(rep, max_vueltas)
+    archivo = guardar_corrida(nombre, sharks, modo, max_vueltas, orq, rep)
+    print(f"\nCorrida guardada en: {archivo}")
+    return rep
+
 
 if __name__ == "__main__":
-    import uvicorn
+    if "--server" in sys.argv:
+        import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("BACKEND_PORT", 8000)))
+        from api import app
+
+        uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("BACKEND_PORT", 8000)))
+    else:
+        try:
+            ejecutar_terminal(auto="--auto" in sys.argv)
+        except (KeyboardInterrupt, EOFError):
+            print("\nSesión terminada.")
+        except Exception as e:  # p. ej. API key inválida, sin saldo o sin conexión
+            print(f"\n❌ Error al consultar el LLM: {type(e).__name__}: {e}")
+            print("Revisa OPENAI_API_KEY / saldo de la cuenta, o corre sin USAR_LLM_REAL para usar el simulador.")
+            sys.exit(1)
