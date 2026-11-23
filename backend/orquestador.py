@@ -132,6 +132,9 @@ class Orquestador:
         if shark.preguntas_propias() >= shark.limite_preguntas:
             return None  # llegó a su máximo: pasa sin consultar al LLM
 
+        # Aviso (no va al historial): el Shark está "pensando" su turno
+        self.notificar({"tipo": "turno", "emisor": shark.nombre, "etapa": "preguntas",
+                        "vuelta": self.vueltas_jugadas})
         aviso = None
         for intento in range(2):  # un reintento si la salida no es válida o está repetida
             # Los errores de red/autenticación del LLM NO se ocultan: se propagan para que
@@ -220,6 +223,7 @@ class Orquestador:
 
     def etapa_retro_y_ofertas(self) -> None:
         # Cada Shark evalúa sin ver la decisión de los demás (se publican al final)
+        self.notificar({"tipo": "inicio_etapa", "etapa": "deliberacion"})
         evaluaciones = [(shark, self._evaluar_shark(shark)) for shark in self.sharks]
 
         self.notificar({"tipo": "inicio_etapa", "etapa": "retroalimentacion"})
@@ -238,6 +242,7 @@ class Orquestador:
     # ---------- ⑤ Elección ----------
     def etapa_eleccion(self, emprendedor: str, elegir: Callable[[Dict[str, Dict]], Optional[str]]) -> None:
         """elegir(ofertas_disponibles) -> nombre del Shark elegido o None (ninguno)."""
+        self.notificar({"tipo": "inicio_etapa", "etapa": "eleccion"})
         disponibles = {n: o for n, o in self.ofertas.items() if o}
         eleccion = elegir(disponibles) if disponibles else None
         if eleccion is not None and eleccion not in disponibles:

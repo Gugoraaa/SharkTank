@@ -1,9 +1,13 @@
 """
 Shark Tank — punto de entrada.
 
-    python main.py            -> simulador en la terminal (pitch, preguntas, retroalimentación, ofertas, elección)
-    python main.py --auto     -> igual, pero el emprendedor responde solo (corrida de prueba rápida)
-    python main.py --server   -> levanta la API FastAPI (api.py)
+    python main.py              -> servidor para Unity (0.0.0.0:$UNITY_PORT, default 8765): Unity crea la
+                                   sesión (POST /sesion) y manda respuestas y elección; ver eventos_unity.py
+    python main.py --terminal   -> simulador interactivo en la terminal (pitch, preguntas, retro, ofertas, elección)
+    python main.py --auto       -> igual, pero el emprendedor responde solo (corrida de prueba rápida)
+    python main.py --server     -> levanta la API FastAPI (api.py)
+
+--terminal y --auto también publican sus eventos por HTTP (GET /eventos) para que Unity los muestre.
 
 Por defecto los Sharks usan un LLM simulado (llm_simulado.py), sin API keys.
 Para usar OpenAI de verdad, en backend/.env:  USAR_LLM_REAL=1, API_TYPE=openai, OPENAI_API_KEY=...
@@ -15,10 +19,13 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
+import eventos_unity
+from eventos_unity import Sesion, SesionCancelada, publicar_evento
 from orquestador import Orquestador, formatear_oferta, son_similares
 from sharks import PERFILES_DEFAULT, SharkAgent
 
@@ -70,6 +77,26 @@ def crear_sharks(num: int):
     return [SharkAgent(p, llm) for p in perfiles], f"real ({llm.descripcion})", llm.comparador()
 
 
+def config_sesion():
+    """(número de Sharks, máximo de vueltas) desde NUM_SHARKS y MAX_VUELTAS."""
+    num = os.getenv("NUM_SHARKS", "5")
+    num = max(1, min(5, int(num))) if num.isdigit() else 5
+    return num, int(os.getenv("MAX_VUELTAS", "5"))
+
+
+def evento_inicio_sesion(emprendedor: str, sharks, modo: str) -> Dict:
+    return {"tipo": "inicio_sesion", "emprendedor": emprendedor, "sharks": [s.nombre for s in sharks],
+            "modo": modo, "monto": 0, "porcentaje": 0}
+
+
+def evento_esperando_respuesta(emprendedor: str, nombre_shark: str, pregunta: str, orq: Orquestador) -> Dict:
+    # El orquestador publica la pregunta y de inmediato pide la respuesta: es el último mensaje
+    ultimo = orq.historial[-1] if orq.historial else {}
+    es_ella = ultimo.get("tipo") == "pregunta" and ultimo.get("contenido") == pregunta
+    return {"tipo": "esperando", "etapa": "preguntas", "emisor": emprendedor, "shark": nombre_shark,
+            "pregunta": pregunta, "responde_a": ultimo["id"] if es_ella else None}
+
+
 # ---------- Entrada / salida en terminal ----------
 
 def leer_multilinea(titulo: str) -> str:
@@ -109,7 +136,9 @@ def imprimir_mensaje(mensaje: Dict) -> None:
         print(f"\n{'=' * 22} Vuelta {mensaje['vuelta']} {'=' * 22}")
     elif tipo == "inicio_etapa":
         titulos = {"retroalimentacion": "③ RETROALIMENTACIÓN", "ofertas": "④ OFERTAS — ¿Dentro o fuera?"}
-        print(f"\n{'=' * 60}\n{titulos[mensaje['etapa']]}\n{'=' * 60}")
+        titulo = titulos.get(mensaje["etapa"])  # "deliberacion" / "eleccion" ya se anuncian en main
+        if titulo:
+            print(f"\n{'=' * 60}\n{titulo}\n{'=' * 60}")
     elif tipo == "pregunta":
         print(f"\n🦈 {mensaje['emisor']} pregunta:\n   {mensaje['contenido']}")
     elif tipo == "pasar":
@@ -172,14 +201,20 @@ def ejecutar_terminal(auto: bool = False) -> Dict:
     print("\n" + "=" * 60)
     print("            SHARK TANK — Simulador (modo terminal)")
     print("=" * 60)
+    eventos_unity.iniciar_servidor()
+    sesion = eventos_unity.nueva_sesion()
+    if auto and os.getenv("USAR_LLM_REAL") != "1":  # pausa entre eventos para probar Unity
+        try:
+            eventos_unity.configurar_ritmo(float(os.getenv("RITMO_AUTO", "0")))
+        except ValueError:
+            pass
 
-    num = os.getenv("NUM_SHARKS", "5")
-    num = max(1, min(5, int(num))) if num.isdigit() else 5
-    max_vueltas = int(os.getenv("MAX_VUELTAS", "5"))
+    num, max_vueltas = config_sesion()
     sharks, modo, es_similar = crear_sharks(num)
     print(f"Modo de los Sharks: {modo}")
 
     nombre = "Emprendedor de prueba" if auto else (input("\nTu nombre (emprendedor): ").strip() or "Emprendedor")
+    publicar_evento(evento_inicio_sesion(nombre, sharks, modo))
 
     print("\nSharks en la mesa (del más fácil al más difícil de convencer):")
     for s in sharks:
@@ -187,17 +222,20 @@ def ejecutar_terminal(auto: bool = False) -> Dict:
 
     if auto:
         def pedir_respuesta(nombre_shark: str, pregunta: str) -> str:
+            publicar_evento(evento_esperando_respuesta(nombre, nombre_shark, pregunta, orq))
             texto = f"Respuesta de prueba para {nombre_shark} sobre: {pregunta}"
             print(f"\n✍️  (auto) {texto}")
             return texto
     else:
         def pedir_respuesta(nombre_shark: str, pregunta: str) -> str:
+            publicar_evento(evento_esperando_respuesta(nombre, nombre_shark, pregunta, orq))
             return leer_multilinea(f"\n✍️  Tu respuesta para {nombre_shark}:")
 
     orq = Orquestador(sharks=sharks, pedir_respuesta=pedir_respuesta, max_vueltas=max_vueltas,
-                      notificar=imprimir_mensaje, es_similar=es_similar)
+                      notificar=lambda m: (imprimir_mensaje(m), publicar_evento(m)), es_similar=es_similar)
 
     # ① Pitch
+    publicar_evento({"tipo": "esperando", "emisor": nombre, "etapa": "pitch"})
     if auto:
         pitch = "Hola Sharks, presento una app de prueba para pedir comida en la universidad."
         monto, porcentaje = 100_000, 10
@@ -236,10 +274,85 @@ def ejecutar_terminal(auto: bool = False) -> Dict:
     orq.etapa_eleccion(nombre, elegir)
 
     rep = orq.verificar()
+    publicar_evento({"tipo": "fin", "resumen": rep})
     imprimir_resumen(rep, max_vueltas)
     archivo = guardar_corrida(nombre, sharks, modo, max_vueltas, orq, rep)
     print(f"\nCorrida guardada en: {archivo}")
+    sesion.terminar()
     return rep
+
+
+# ---------- Modo servidor para Unity ----------
+
+def ejecutar_sesion_unity(sesion: Sesion, datos: Dict) -> None:
+    """Corre una sesión creada con POST /sesion (en su propio hilo). Las respuestas y la elección
+    llegan por POST /respuesta y POST /eleccion."""
+    nombre = datos["emprendedor"]
+    try:
+        num, max_vueltas = config_sesion()
+        sharks, modo, es_similar = crear_sharks(num)
+        print(f"\n{'=' * 60}\n📥 Sesión {sesion.id}: {nombre} pide ${datos['monto']:,.0f} "
+              f"por el {datos['porcentaje']:g}%  (Sharks: {modo})\n{'=' * 60}")
+        sesion.publicar(evento_inicio_sesion(nombre, sharks, modo))
+
+        def pedir_respuesta(nombre_shark: str, pregunta: str) -> str:
+            sesion.publicar(evento_esperando_respuesta(nombre, nombre_shark, pregunta, orq))
+            print("   ⏳ Esperando la respuesta desde Unity...")
+            texto = sesion.esperar("respuesta")
+            print(f"   ✍️  {texto}")
+            return texto
+
+        def elegir(disponibles: Dict[str, Dict]) -> Optional[str]:
+            sesion.publicar({"tipo": "esperando", "etapa": "eleccion", "emisor": nombre,
+                             "opciones": [{"shark": n, **o} for n, o in disponibles.items()]})
+            print("\n⏳ Esperando la elección desde Unity...")
+            return sesion.esperar("eleccion", list(disponibles))
+
+        # Primero se publica (lanza SesionCancelada si ya no es la sesión actual) y luego se imprime
+        orq = Orquestador(sharks=sharks, pedir_respuesta=pedir_respuesta, max_vueltas=max_vueltas,
+                          notificar=lambda m: (sesion.publicar(m), imprimir_mensaje(m)), es_similar=es_similar)
+        resumen_pitch = datos["pitch"] if len(datos["pitch"]) <= 300 else datos["pitch"][:300] + "…"
+        print(f"\n① PITCH:\n   {resumen_pitch}")
+        orq.etapa_pitch(nombre, datos["pitch"], datos["monto"], datos["porcentaje"])
+        print("\n② PREGUNTAS")
+        orq.etapa_preguntas(nombre)
+        print("\nLos Sharks están deliberando...")
+        orq.etapa_retro_y_ofertas()
+        if not any(orq.ofertas.values()):
+            print("\nNingún Shark hizo oferta. 😢")
+        orq.etapa_eleccion(nombre, elegir)
+
+        rep = orq.verificar()
+        sesion.publicar({"tipo": "fin", "resumen": rep})
+        imprimir_resumen(rep, max_vueltas)
+        archivo = guardar_corrida(nombre, sharks, modo, max_vueltas, orq, rep)
+        print(f"\nCorrida guardada en: {archivo}\n📡 Esperando una nueva sesión desde Unity...")
+    except SesionCancelada:
+        print(f"\n🛑 Sesión {sesion.id} cancelada.")
+    except Exception as e:  # p. ej. API key inválida, sin saldo o sin conexión
+        contenido = f"{type(e).__name__}: {e}"
+        print(f"\n❌ Error en la sesión {sesion.id}: {contenido}")
+        try:
+            sesion.publicar({"tipo": "error", "contenido": contenido})
+        except SesionCancelada:
+            pass
+    finally:
+        sesion.terminar()
+
+
+def ejecutar_servidor_unity() -> None:
+    print("\n" + "=" * 60)
+    print("            SHARK TANK — Servidor para Unity")
+    print("=" * 60)
+    if not eventos_unity.iniciar_servidor():
+        print("No se puede continuar sin el servidor. Cambia UNITY_PORT o cierra el proceso que usa el puerto.")
+        sys.exit(1)
+    eventos_unity.aceptar_sesiones(ejecutar_sesion_unity)
+    real = os.getenv("USAR_LLM_REAL") == "1"
+    print(f"LLM de los Sharks: {'real (OpenAI)' if real else 'simulado (USAR_LLM_REAL=1 para el real)'}")
+    print("Esperando que Unity cree una sesión (POST /sesion)... Ctrl+C para salir.")
+    while True:
+        time.sleep(3600)
 
 
 if __name__ == "__main__":
@@ -249,9 +362,21 @@ if __name__ == "__main__":
         from api import app
 
         uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("BACKEND_PORT", 8000)))
+    elif "--terminal" not in sys.argv and "--auto" not in sys.argv:
+        try:
+            ejecutar_servidor_unity()
+        except KeyboardInterrupt:
+            print("\nServidor detenido.")
     else:
         try:
-            ejecutar_terminal(auto="--auto" in sys.argv)
+            auto = "--auto" in sys.argv
+            ejecutar_terminal(auto=auto)
+            if eventos_unity.servidor_activo():  # deja que Unity termine de reproducir los eventos
+                if auto:
+                    print("\nServidor de eventos activo 120 s más (Ctrl+C para salir)...")
+                    time.sleep(120)
+                else:
+                    input("\nPresiona Enter para salir")
         except (KeyboardInterrupt, EOFError):
             print("\nSesión terminada.")
         except Exception as e:  # p. ej. API key inválida, sin saldo o sin conexión
