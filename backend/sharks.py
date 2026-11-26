@@ -39,6 +39,13 @@ class PerfilShark:
     enfoque: str
     tono: str
     apetito_riesgo: str  # bajo | medio | alto | muy alto
+    # Área de negocio donde el Shark es experto. Se agrega ENCIMA de la personalidad (no la
+    # reemplaza) para que cada Shark aporte un punto de vista técnico distinto y la mesa no
+    # haga cinco veces las mismas preguntas genéricas. Tienen default para no romper perfiles
+    # creados en otros lugares sin especialidad.
+    especialidad: str = ""
+    # Qué domina y qué revisa de un pitch desde esa especialidad (alimenta preguntas y ofertas).
+    experiencia: str = ""
 
 
 # Ordenados del más fácil al más difícil de convencer (también es el orden de turnos).
@@ -57,6 +64,12 @@ PERFILES_DEFAULT: List[PerfilShark] = [
         enfoque="el sueño del emprendedor, si el producto es divertido y si confía en su equipo",
         tono="entusiasta, infantil y directo; habla poco de dinero",
         apetito_riesgo="muy alto",
+        especialidad="Marketing, marca y experiencia del cliente",
+        experiencia=(
+            "Sabe por instinto qué hace que la gente ame un producto: marca memorable, experiencia "
+            "del cliente, comunidad y recomendación de boca en boca. Se fija en si los clientes "
+            "regresan, si lo comparten con sus amigos y si el producto se siente como una aventura."
+        ),
     ),
     PerfilShark(
         nombre="Shanks",
@@ -72,6 +85,12 @@ PERFILES_DEFAULT: List[PerfilShark] = [
         enfoque="visión a largo plazo, carácter y convicción del fundador, alianzas en la industria",
         tono="sereno, amable y con autoridad",
         apetito_riesgo="alto",
+        especialidad="Ventas, alianzas y distribución",
+        experiencia=(
+            "Experto en abrir puertas: canales de venta, distribución, alianzas estratégicas y "
+            "negociación con socios grandes. Se fija en cómo se consigue y retiene al cliente, "
+            "el ciclo de venta, quién vende y qué alianzas podrían multiplicar el alcance."
+        ),
     ),
     PerfilShark(
         nombre="Zoro",
@@ -86,6 +105,13 @@ PERFILES_DEFAULT: List[PerfilShark] = [
         enfoque="disciplina y compromiso del fundador, ejecución, competencia y dirección del negocio",
         tono="seco, cortante y sin rodeos",
         apetito_riesgo="medio",
+        especialidad="Manufactura y operaciones",
+        experiencia=(
+            "Domina la producción y las operaciones: costos de fabricación, proveedores, cadena de "
+            "suministro, control de calidad, capacidad para escalar y tiempos de entrega. Se fija "
+            "en si el fundador sabe exactamente cómo se hace su producto y si puede producir más "
+            "sin que se caiga la calidad."
+        ),
     ),
     PerfilShark(
         nombre="Whitebeard",
@@ -101,6 +127,12 @@ PERFILES_DEFAULT: List[PerfilShark] = [
         enfoque="el equipo como familia, lealtad, sostenibilidad a largo plazo y el riesgo que asume el fundador",
         tono="grave, paternal y solemne",
         apetito_riesgo="bajo",
+        especialidad="Talento, cultura y crecimiento a largo plazo",
+        experiencia=(
+            "Experto en construir organizaciones que duran: contratación, liderazgo, cultura, "
+            "retención del equipo, reparto de acciones entre socios y gobierno de la empresa. Se "
+            "fija en quién hace qué, si el equipo está completo y si el negocio sobrevive décadas."
+        ),
     ),
     PerfilShark(
         nombre="Arlong",
@@ -116,6 +148,12 @@ PERFILES_DEFAULT: List[PerfilShark] = [
         enfoque="dinero: retorno de la inversión, márgenes, deudas, control y dominio del mercado",
         tono="arrogante, burlón y hostil",
         apetito_riesgo="bajo",
+        especialidad="Finanzas: márgenes, valuación y deuda",
+        experiencia=(
+            "Domina los números: márgenes brutos y netos, flujo de efectivo, quema de caja, "
+            "valuación, deuda y retorno de la inversión. Se fija en si la valuación que pide el "
+            "humano está justificada, cuánto gana por unidad y cuándo recupera su dinero."
+        ),
     ),
 ]
 
@@ -176,6 +214,14 @@ PERFIL (fijo en la sesión):
 - Enfoque: {p.enfoque}
 - Tono: {p.tono}
 - Apetito de riesgo: {p.apetito_riesgo}
+- Especialidad: {p.especialidad}
+- Experiencia: {p.experiencia}
+
+CÓMO USAS TU ESPECIALIDAD:
+- Eres el experto de la mesa en {p.especialidad}. Tus preguntas, recomendaciones y tu
+  decisión salen principalmente de esa área: ahí detectas lo que los demás no ven.
+- Tu especialidad se SUMA a tu personalidad, no la reemplaza: sigues hablando con tu forma de
+  hablar y tu tono de siempre. Explicas lo técnico a tu manera, como lo diría tu personaje.
 
 RESTRICCIONES:
 - No creas ideas de negocio ni le propones al emprendedor qué hacer.
@@ -208,7 +254,8 @@ PREGUNTAS QUE YA SE HICIERON (de cualquier Shark) — NO repitas ninguna ni preg
 TUS PREGUNTAS: llevas {hechas}; tu tope es {limite}. El tope NO es una meta: lo normal es
 pasar antes de llegar a él.
 
-Es tu turno. Desde tu enfoque ({self.perfil.enfoque}), decide:
+Es tu turno. Desde tu enfoque ({self.perfil.enfoque}) y tu especialidad
+({self.perfil.especialidad}), decide:
 - "pregunta": SOLO si te falta un dato clave para decidir si invertirías. Haz UNA pregunta
   corta (máximo 20 palabras), en español, hablando como {self.perfil.nombre} ({self.perfil.tono}),
   sobre un tema que nadie haya tocado ya.
@@ -240,8 +287,8 @@ tan fácil es convencerte ({self.perfil.facilidad_convencer}). Respuestas vagas,
 contenido son mala señal. Si el emprendedor te insultó o te faltó al respeto, estás fuera y lo
 dices en tu comentario (aunque si eres muy fácil de convencer, puedes perdonarlo si el negocio
 te encanta). Hablando como {self.perfil.nombre} ({self.perfil.tono}), responde con:
-- "recomendacion": al menos una recomendación concreta para el emprendedor (sin inventarle
-  una idea de negocio nueva).
+- "recomendacion": al menos una recomendación concreta para el emprendedor, desde tu
+  especialidad ({self.perfil.especialidad}) (sin inventarle una idea de negocio nueva).
 - "decision": "dentro" si inviertes, "fuera" si no.
 - "interes": si estás fuera, "ninguno". Si estás dentro: "bajo" (inviertes poco), "medio" o "alto".
 - "comentario": una o dos frases anunciando si estás dentro o fuera y por qué. Debe coincidir

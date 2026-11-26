@@ -218,7 +218,7 @@ def ejecutar_terminal(auto: bool = False) -> Dict:
 
     print("\nSharks en la mesa (del más fácil al más difícil de convencer):")
     for s in sharks:
-        print(f"  • {s.nombre} — {s.perfil.facilidad_convencer} de convencer; se fija en {s.perfil.enfoque}")
+        print(f"  • {s.nombre} [{s.perfil.especialidad}] — {s.perfil.facilidad_convencer} de convencer; se fija en {s.perfil.enfoque}")
 
     if auto:
         def pedir_respuesta(nombre_shark: str, pregunta: str) -> str:
