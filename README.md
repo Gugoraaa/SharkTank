@@ -1,251 +1,144 @@
-# Shark Tank Pitch Simulator
+# Shark Tank — Simulador multiagente
 
-A web application that simulates a Shark Tank pitch experience using AI-powered judges. This project was migrated from Jupyter notebooks to a full-stack web application with FastAPI backend and React frontend.
+Simulador de un episodio de Shark Tank: un emprendedor presenta su pitch y cinco Sharks (agentes con LLM) hacen preguntas por turnos, deliberan, dan retroalimentación y hacen o no una oferta. El emprendedor elige con quién cerrar el trato.
 
-## Project Structure
+La interfaz vive en **Unity**; este repo es el backend en Python que orquesta la simulación y le manda los eventos a Unity por HTTP. También se puede jugar completo desde la terminal.
+
+## Estructura del proyecto
 
 ```
 shark-tank-app/
 ├── backend/
-│   ├── main.py              # Punto de entrada: simulador en terminal (--server para la API)
-│   ├── api.py               # FastAPI server with all endpoints
-│   ├── orquestador.py       # Orquestador determinista (etapas, turnos, historial)
-│   ├── sharks.py            # Perfiles y agentes Shark
-│   ├── llm_simulado.py      # LLM simulado para trabajar sin API keys
-│   ├── test_ronda_preguntas.py
-│   ├── requirements.txt     # Python dependencies
-│   └── .env                 # Your actual environment variables
-│   
-├── frontend/
-│   ├── src/
-│   │   ├── App.jsx         # Main React component
-│   │   ├── App.css         # Application styles
-│   │   ├── main.jsx        # React entry point
-│   │   ├── index.css       # Global styles
-│   ├── index.html          # HTML template
-│   ├── vite.config.js      # Vite configuration
-│   ├── package.json        # Node dependencies
-│   └── .env                # Your actual frontend env vars
-│   
-└── README.md               # This file
+│   ├── main.py                  # Punto de entrada: servidor para Unity (default), --terminal, --auto, --server
+│   ├── eventos_unity.py         # Servidor HTTP de eventos para Unity (librería estándar, puerto 8765)
+│   ├── orquestador.py           # Orquestador determinista (etapas, turnos, historial, verificación)
+│   ├── sharks.py                # Perfiles (personalidad + especialidad) y agentes Shark
+│   ├── llm_simulado.py          # LLM simulado para trabajar sin API keys
+│   ├── llm_openai.py            # LLM real con OpenAI (+ embeddings para preguntas repetidas)
+│   ├── api.py                   # API FastAPI original (python main.py --server)
+│   ├── test_ronda_preguntas.py  # Pruebas automáticas (usan el simulador)
+│   ├── requirements.txt
+│   ├── .env.example             # Plantilla de variables de entorno (cópiala a .env)
+│   └── corridas/                # Historial de cada corrida (se genera solo)
+└── README.md
 ```
 
-## Features
+## Instalación
 
-- **Complete Business Pitch Setup**: Define your business idea with all key details
-- **Multiple Judge Agents**: Add and configure multiple AI judges with different personalities
-- **Real-time Chat Interface**: Interactive conversation with judges
-- **Iterative Feedback**: Continue the conversation and respond to judge concerns
-- **Example Templates**: Load example business ideas to get started quickly
-- **Conversation History**: Track the full pitch conversation
+Requisitos: Python 3.12.
 
-## Migration from Notebooks
-
-### What was preserved:
-- ✅ All agent creation logic (Entrepreneur and Judge agents)
-- ✅ Business idea structure and validation
-- ✅ Task creation and crew execution
-- ✅ Conversation history tracking
-- ✅ API connection testing
-- ✅ Support for both OpenAI and Azure OpenAI
-- ✅ Ability to respond multiple times to judge feedback
-
-### What changed:
-- 🔄 Ngrok tunnel → Direct FastAPI server (no longer needed for web app)
-- 🔄 Manual cell execution → Automatic web UI interactions
-- 🔄 Two separate notebooks → Single integrated web application
-- 🔄 Hardcoded variables → Environment variables (.env file)
-- 🔄 Print statements → React UI components
-- 🔄 Threading for server → Standard FastAPI deployment
-
-## Installation
-
-### Prerequisites
-
-- Python 3.12 (same as Google Colab environment)
-- Node.js 18+ and npm
-- OpenAI API key OR Azure OpenAI access
-
-### Backend Setup
-
-1. Navigate to the backend directory:
 ```bash
 cd backend
-```
-
-2. Create a virtual environment:
-```bash
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-3. Install dependencies:
-```bash
+source venv/bin/activate      # En Windows: venv\Scripts\activate
 pip install -r requirements.txt
+cp .env.example .env
 ```
 
-4. Edit `.env` and add your API keys:
-```env
-# For Azure OpenAI (recommended, as used in notebooks)
-API_TYPE=azure
-AZURE_API_KEY=your_azure_api_key_here
-AZURE_ENDPOINT=https://your-resource-name.openai.azure.com/
-AZURE_DEPLOYMENT=gpt-4o-mini
-AZURE_API_VERSION=2024-02-01
+El servidor para Unity, el modo terminal y el LLM simulado solo usan la librería estándar. `requirements.txt` hace falta para el LLM real (`openai`, `python-dotenv`) y para la API FastAPI (`--server`).
 
-# OR for OpenAI
-API_TYPE=openai
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_MODEL=gpt-4
-```
-
-### Frontend Setup
-
-1. Navigate to the frontend directory:
-```bash
-cd frontend
-```
-
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Edit `.env` if needed (default should work):
-```env
-VITE_API_URL=http://localhost:8000
-```
-
-## Running the Application
-
-### Simulador en terminal
-
-Flujo: ① Pitch (+ monto y porcentaje) → ② Preguntas por vueltas → ③ Retroalimentación → ④ Ofertas (dentro/fuera) → ⑤ Elección.
-
-| Shark | Qué tan fácil es convencerlo | Máx. preguntas |
-|---|---|---|
-| Luffy | muy fácil | 1 |
-| Shanks | fácil | 2 |
-| Zoro | media | 2 |
-| Whitebeard | difícil | 3 |
-| Arlong | muy difícil | 4 |
-
-Oferta = f(interés): ninguno → fuera · bajo → pequeña (mitad del monto, mismo %) · medio → cercana (mismo monto, 1.5× el %) · alto → completa (lo pedido).
-
-Con el LLM real, las preguntas repetidas se detectan por significado (embeddings `text-embedding-3-small`, umbral 0.78 configurable con `UMBRAL_REPETIDAS`).
+## Cómo correrlo
 
 ```bash
 cd backend
-python main.py          # pitch + ronda de preguntas; tú respondes por escrito
-python main.py --auto   # corrida de prueba con respuestas automáticas
+python main.py              # servidor para Unity (0.0.0.0:8765): Unity crea la sesión y manda respuestas/elección
+python main.py --terminal   # simulador interactivo en la terminal; tú respondes por escrito
+python main.py --auto       # igual que --terminal, pero el emprendedor responde solo (corrida de prueba)
+python main.py --server     # API FastAPI original (api.py) en el puerto 8000
 python -m unittest test_ronda_preguntas -v   # pruebas automáticas con el simulador (no gastan tokens)
 ```
 
-- Por defecto los Sharks usan un LLM simulado (`llm_simulado.py`): no gasta tokens ni necesita internet. Las pruebas unitarias **siempre** usan el simulador.
-- Para usar OpenAI de verdad (`llm_openai.py`): `pip install openai python-dotenv` y en `backend/.env`:
-  ```env
-  USAR_LLM_REAL=1
-  API_TYPE=openai
-  OPENAI_API_KEY=sk-...
-  OPENAI_MODEL=gpt-4o-mini   # opcional
-  ```
-- Variables opcionales: `NUM_SHARKS` (1–5, default 5), `MAX_VUELTAS` (default 5), `SEMILLA` (corridas reproducibles).
-- Cada corrida se guarda en `backend/corridas/` con el historial y la verificación (preguntas repetidas, % de entrega a los Sharks).
+`--terminal` y `--auto` también levantan el servidor de eventos, así que Unity puede reproducir la corrida con `GET /eventos`.
 
-### Start Backend API (Terminal 1):
+## Flujo de la simulación
 
-```bash
-cd backend
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-python main.py --server
-```
+① Pitch (+ monto y porcentaje) → ② Preguntas por vueltas → ③ Deliberación y retroalimentación → ④ Ofertas (dentro/fuera) → ⑤ Elección.
 
-The backend will start on `http://localhost:8000`
+- En cada vuelta, cada Shark pregunta o pasa. La ronda termina cuando todos pasan en la misma vuelta o se llega a `MAX_VUELTAS`.
+- Cada pregunta y respuesta se reparte a todos los Sharks; las preguntas repetidas se rechazan.
+- Oferta = f(interés): ninguno → fuera · bajo → pequeña (mitad del monto, mismo %) · medio → cercana (mismo monto, 1.5× el %) · alto → completa (lo pedido).
+- Con el LLM real, las preguntas repetidas se detectan por significado (embeddings `text-embedding-3-small`, umbral 0.78 configurable con `UMBRAL_REPETIDAS`).
 
-### Start Frontend (Terminal 2):
+### Los Sharks
 
-```bash
-cd frontend
-npm run dev
-```
+Cada Shark tiene una personalidad (forma de hablar, enfoque, apetito de riesgo) y además una especialidad de negocio, para que la mesa no haga cinco veces las mismas preguntas genéricas. Hablan en el orden de la tabla.
 
-The frontend will start on `http://localhost:3000`
+| Shark | Especialidad | Qué tan fácil es convencerlo | Máx. preguntas |
+|---|---|---|---|
+| Luffy | Marketing, marca y experiencia del cliente | muy fácil | 1 |
+| Shanks | Ventas, alianzas y distribución | fácil | 2 |
+| Zoro | Manufactura y operaciones | media | 2 |
+| Whitebeard | Talento, cultura y crecimiento a largo plazo | difícil | 3 |
+| Arlong | Finanzas: márgenes, valuación y deuda | muy difícil | 4 |
 
-### Access the Application:
+## Servidor para Unity (`python main.py`)
 
-Open your browser and navigate to `http://localhost:3000`
+Servidor HTTP con la librería estándar, con CORS abierto. Cada sesión corre en su propio hilo y se queda esperando las respuestas y la elección que manda Unity. Crear una sesión nueva cancela la anterior.
 
-## Usage Guide
+| Método | Ruta | Cuerpo | Respuesta |
+|---|---|---|---|
+| `POST` | `/sesion` | `{"emprendedor", "pitch", "monto", "porcentaje"}` | `{"sesion": id}` |
+| `GET` | `/eventos?desde=N` | — | `{"sesion": id, "eventos": [...]}` (eventos con `seq > N`) |
+| `GET` | `/estado` | — | `{"sesion", "total", "activa", "esperando": "nada" \| "respuesta" \| "eleccion"}` |
+| `POST` | `/respuesta` | `{"texto": "..."}` | `{"ok": true}` |
+| `POST` | `/eleccion` | `{"shark": "Luffy"}` o `{"shark": null}` | `{"ok": true}` |
+| `POST` | `/cancelar` | — | `{"ok": true}` |
 
-### 1. Setup Your Pitch
+- Validación de `/sesion`: `emprendedor` y `pitch` no vacíos, `monto > 0` y `0 < porcentaje ≤ 100`.
+- `/respuesta` y `/eleccion` responden `409` si la sesión no está esperando eso; `/eleccion` solo acepta Sharks que hicieron oferta (o `null` para no cerrar con nadie).
+- Tipos de evento (campo `tipo`): `inicio_sesion`, `inicio_etapa`, `inicio_vuelta`, `turno`, `pitch`, `pregunta`, `pasar`, `respuesta`, `recomendacion`, `decision` (oferta dentro/fuera), `eleccion`, `esperando` (con `etapa`: `pitch`, `preguntas` o `eleccion`), `fin` (con el `resumen` de la verificación) y `error`.
 
-- **Business Idea**: Fill in all the fields for your business
-  - Name, Description, Target Market, Revenue Model, etc.
-  - Or click "Load Example" to see a sample business
-  
-- **Judges Configuration**: 
-  - At least one judge is required (Mark Cuban is pre-configured)
-  - Click "+ Add Another Judge" to add more judges
-  - Customize each judge's name and backstory
-
-### 2. Start the Pitch
-
-- Click "Start Pitch" button
-- The system will generate your initial pitch automatically
-- The judge(s) will respond with questions or feedback
-
-### 3. Continue the Conversation
-
-- Read the judge's response
-- Type your answer in the input field
-- Click "Send" or press Enter
-- Continue the conversation until the judge makes a final decision
-
-### 4. Start Over
-
-- Click "Start Over" to reset and pitch a new business idea
-
-## Example Business Ideas
-
-The application includes an example business (EcoTrack) that you can load. Here are more examples from the notebooks:
-
-### Tech SaaS Example:
-```
-Name: DataSense AI
-Description: An AI-powered data analysis platform for small and medium businesses
-Target Market: SMBs without dedicated data science teams
-Revenue Model: Tiered SaaS subscription based on data volume and features
-Current Traction: 50 paying customers, $15,000 MRR, 15% month-over-month growth
-Investment Needed: $500,000 for 15% equity
-Use of Funds: Expanding engineering team, enhancing AI capabilities, sales and marketing
-```
-
-### Consumer Product Example:
-```
-Name: GreenPlate
-Description: Biodegradable, plant-based food containers that replace single-use plastics
-Target Market: Eco-conscious restaurants, food delivery services, and consumers
-Revenue Model: Direct B2B sales to restaurants and wholesale to retailers
-Current Traction: Partnerships with 10 local restaurants, LOIs from 2 regional chains
-Investment Needed: $250,000 for 20% equity
-Use of Funds: Scaling production, certifications, and expanding distribution channels
-```
-
-## API Endpoints
-
-The backend provides the following endpoints:
-
-- `GET /` - Health check
-- `POST /api/test-connection` - Test AI API connection
-- `POST /api/start-pitch` - Initialize new pitch session
-- `POST /api/send-message` - Send message in conversation
-- `GET /api/conversation-history` - Get conversation history
-- `POST /api/reset` - Reset conversation
-
-### API CURL Examples
+Ejemplo de una sesión completa:
 
 ```bash
-curl --location --request POST 'http://localhost:8000/'
+curl -X POST http://localhost:8765/sesion -H 'Content-Type: application/json' \
+  -d '{"emprendedor": "Ana", "pitch": "App para pedir comida en la universidad", "monto": 100000, "porcentaje": 10}'
+curl 'http://localhost:8765/eventos?desde=0'      # Unity hace polling con el último seq recibido
+curl http://localhost:8765/estado                 # "esperando": "respuesta"
+curl -X POST http://localhost:8765/respuesta -H 'Content-Type: application/json' -d '{"texto": "Vendemos 200 pedidos al día"}'
+curl -X POST http://localhost:8765/eleccion  -H 'Content-Type: application/json' -d '{"shark": "Luffy"}'
+```
+
+## Configuración (`backend/.env`)
+
+Por defecto los Sharks usan un LLM simulado (`llm_simulado.py`): no gasta tokens ni necesita internet. Las pruebas unitarias **siempre** usan el simulador.
+
+Para usar OpenAI de verdad (`llm_openai.py`):
+
+```env
+USAR_LLM_REAL=1
+API_TYPE=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini   # opcional
+```
+
+| Variable | Default | Para qué |
+|---|---|---|
+| `NUM_SHARKS` | 5 | Cuántos Sharks se sientan (1–5, en el orden de la tabla) |
+| `MAX_VUELTAS` | 5 | Tope de vueltas en la ronda de preguntas |
+| `SEMILLA` | — | Corridas reproducibles con el simulador |
+| `UMBRAL_REPETIDAS` | 0.78 | Similitud a partir de la cual una pregunta cuenta como repetida (LLM real) |
+| `UNITY_PORT` | 8765 | Puerto del servidor para Unity |
+| `RITMO_AUTO` | 0 | Segundos de pausa entre eventos en `--auto` con el simulador, para ver la corrida en Unity |
+| `BACKEND_PORT` | 8000 | Puerto de la API FastAPI (`--server`) |
+
+Cada corrida se guarda en `backend/corridas/` con el historial y la verificación (preguntas repetidas, % de entrega a los Sharks).
+
+## API FastAPI original (`python main.py --server`)
+
+La API de la primera versión (migrada de los notebooks, con CrewAI) sigue disponible en `api.py`. Usa `API_TYPE=azure` con `AZURE_API_KEY`, `AZURE_ENDPOINT`, `AZURE_DEPLOYMENT` y `AZURE_API_VERSION`, o `API_TYPE=openai` con `OPENAI_API_KEY`.
+
+- `GET /`: health check
+- `POST /api/test-connection`: prueba la conexión con el LLM
+- `POST /api/start-pitch`: inicia una sesión de pitch
+- `POST /api/send-message`: manda un mensaje en la conversación
+- `GET /api/conversation-history`: historial de la conversación
+- `POST /api/reset`: reinicia la conversación
+
+### Ejemplos con curl
+
+```bash
+curl --location 'http://localhost:8000/'
 ```
 ```json
 {
@@ -306,96 +199,13 @@ curl --location 'http://localhost:8000/api/start-pitch' \
 }
 ```
 
-## Troubleshooting
+## Solución de problemas
 
-### LiteLLM Issues
+- **El puerto 8765 está ocupado**: cierra el otro proceso o cambia `UNITY_PORT`.
+- **Unity no recibe eventos**: revisa que el backend esté corriendo y que Unity apunte a la IP y puerto correctos (el servidor escucha en `0.0.0.0`).
+- **Error con el LLM real** (key inválida, sin saldo o sin conexión): la sesión publica un evento `error` con el detalle y lo imprime en consola. Para seguir trabajando, quita `USAR_LLM_REAL=1` y se usa el simulador.
+- **API FastAPI / LiteLLM**: usa las versiones exactas de `requirements.txt` (`litellm==1.74.9`, `crewai==0.201.1`); revisa con `pip show litellm` y prueba la conexión con `/api/test-connection`.
 
-The application uses **litellm==1.74.9** (exact version from the notebooks) to ensure compatibility. If you encounter LiteLLM errors:
+## Licencia
 
-1. Verify you're using the correct version:
-```bash
-pip show litellm
-```
-
-1. Ensure your API keys are correctly set in `.env`
-
-2. Test the connection using the `/api/test-connection` endpoint
-
-### Connection Issues
-
-- Ensure backend is running on port 8000
-- Ensure frontend is running on port 3000
-- Check that `.env` files are properly configured
-- Verify no firewall is blocking the ports
-
-### Agent Not Responding
-
-- Check backend logs for errors
-- Verify API keys are valid and have sufficient credits
-- Ensure the API endpoint is correct for your provider (OpenAI vs Azure)
-
-## Library Versions
-
-The application uses the exact same library versions as the Google Colab notebooks to ensure compatibility:
-
-- crewai==0.201.1
-- litellm==1.74.9
-- langchain==0.3.27
-- langchain-openai==0.3.34
-- openai==1.108.0
-
-Full list in `backend/requirements.txt`
-
-## Development
-
-### Adding More Judges
-
-The system supports multiple judges. To add a new default judge, modify the `judges` state in `App.jsx`:
-
-```javascript
-const [judges, setJudges] = useState([
-  // existing judge...
-  {
-    name: 'Barbara Corcoran',
-    role: 'Shark Tank Judge',
-    goal: 'Evaluate retail and consumer businesses',
-    backstory: 'You specialize in retail and consumer products...'
-  }
-]);
-```
-
-### Customizing Agent Behavior
-
-Edit the agent creation functions in `backend/main.py`:
-
-- `create_judge_agents()` - Customize judge behavior
-- `create_entrepreneur_agent()` - Customize entrepreneur behavior
-
-## Production Deployment
-
-For production deployment:
-
-1. Use a proper WSGI server for FastAPI (gunicorn + uvicorn workers)
-2. Build the React frontend: `npm run build`
-3. Serve the built frontend through a web server (nginx, Apache)
-4. Use environment-specific `.env` files
-5. Implement proper session management (Redis, database)
-6. Add authentication and authorization
-7. Set up proper CORS policies
-8. Use HTTPS for all communications
-
-## License
-
-This project is based on the original Jupyter notebooks for educational purposes.
-
-## Support
-
-If you encounter issues:
-1. Check the console logs (browser and backend)
-2. Verify all environment variables are set correctly
-3. Ensure you're using Python 3.12 and the exact library versions
-4. Review the notebook comments for original functionality
-
----
-
-**Note**: This application maintains all the functionality from the original Jupyter notebooks while providing a better user experience through a web interface.
+Proyecto académico, basado en los notebooks originales de la clase.
